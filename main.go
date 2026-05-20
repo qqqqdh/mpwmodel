@@ -6,74 +6,146 @@ import (
 	"os"
 	"pass/core"
 	"pass/storage"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 )
 
-func main() {
-	// 테스트에 사용할 임시 파일 경로
-	vaultPath := "vault.dat"
+const vaultPath = "vault.dat"
 
-	// 테스트용 마스터 비밀번호 설정
-	masterPassword := []byte("MySuperSecretPassword123!")
+// --- 1. Bubble Tea 애플리케이션 상태(Model) 정의 ---
+type model struct {
+	vault  *core.Vault
+	key    []byte
+	salt   []byte
+	cursor int // 현재 선택된 리스트의 인덱스 (위/아래 방향키로 조절)
+	err    error
+}
 
-	fmt.Println("=== 1단계: 마스터 비밀번호 및 고유 Salt 생성 ===")
-	// 실제 프로그램에서는 최초 가입 시 생성한 Salt를 파일에 저장해두고 계속 재사용해야 합니다.
-	// 여기서는 테스트를 위해 즉석에서 생성합니다.
-	salt, err := core.GenerateSalt()
-	if err != nil {
-		log.Fatalf("Salt 생성 실패: %v", err)
+// Init은 프로그램 시작 시 초기화할 명령을 정의합니다 (지금은 없음)
+func (m model) Init() tea.Cmd {
+	return nil
+}
+
+// --- 2. 이벤트 처리 (Update) ---
+// 키보드 입력이나 기타 이벤트가 발생할 때마다 호출됩니다.
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	// 키보드 입력 이벤트
+	case tea.KeyMsg:
+		switch msg.String() {
+
+		// 프로그램 종료 (Ctrl+C, q, esc)
+		case "ctrl+c", "q", "esc":
+			return m, tea.Quit
+
+		// 위쪽 화살표
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+
+		// 아래쪽 화살표
+		case "down", "j":
+			if m.cursor < len(m.vault.Accounts)-1 {
+				m.cursor++
+			}
+		}
 	}
-	fmt.Printf("[Success] Salt 생성 완료 (길이: %d 바이트)\n\n", len(salt))
+	return m, nil
+}
 
-	fmt.Println("=== 2단계: 마스터 키 파생 (Argon2id) ===")
-	key := core.DeriveKey(masterPassword, salt)
-	fmt.Printf("[Success] 32바이트 AES 키 파생 완료\n\n")
+// --- 3. 화면 렌더링 (View) ---
+// Model의 상태를 바탕으로 터미널에 그릴 문자열을 반환합니다.
+func (m model) View() string {
+	s := "🔐 Secure Password Manager\n\n"
 
-	fmt.Println("=== 3단계: 테스트용 계정 데이터 생성 ===")
-	mockVault := &core.Vault{
-		Accounts: []core.Account{
-			{Service: "google.com", Username: "minsu@gmail.com", Password: []byte("googlePlainPwd123")},
-			{Service: "github.com", Username: "minsu-park", Password: []byte("gitSecret456")},
-		},
-	}
-	fmt.Printf("저장할 계정 개수: %d개\n\n", len(mockVault.Accounts))
-
-	fmt.Println("=== 4단계: 데이터 암호화 및 파일 저장 ===")
-	err = storage.SaveVault(vaultPath, mockVault, key)
-	if err != nil {
-		log.Fatalf("Vault 저장 실패: %v", err)
-	}
-	fmt.Println("[Success] 암호화되어 'vault.dat' 파일로 저장되었습니다.")
-
-	// 저장된 파일 내용이 평문이 아님을 확인하기 위해 크기 출력
-	fileInfo, _ := os.Stat(vaultPath)
-	fmt.Printf("생성된 파일 크기: %d 바이트\n\n", fileInfo.Size())
-
-	fmt.Println("=== 5단계: 파일에서 복호화 및 데이터 로드 ===")
-	loadedVault, err := storage.LoadVault(vaultPath, key)
-	if err != nil {
-		log.Fatalf("Vault 로드 실패: %v", err)
-	}
-	fmt.Println("[Success] 복호화 성공! 안전하게 데이터를 읽어왔습니다.")
-
-	// 복호화된 데이터 출력하여 검증
-	for _, acc := range loadedVault.Accounts {
-		fmt.Printf("-> 서비스: %-12s | 아이디: %-15s | 비밀번호: %s\n",
-			acc.Service, acc.Username, string(acc.Password))
-	}
-	fmt.Println()
-
-	fmt.Println("=== 6단계: 의도적인 복호화 실패 테스트 (틀린 비밀번호) ===")
-	wrongPassword := []byte("WrongPassword!!!")
-	wrongKey := core.DeriveKey(wrongPassword, salt) // 틀린 비밀번호로 키 생성
-
-	_, err = storage.LoadVault(vaultPath, wrongKey)
-	if err != nil {
-		fmt.Println("[Success] 예상대로 복호화 실패 (에러 메시지):", err)
-		fmt.Println("-> AES-GCM 무결성 검증 덕분에 올바르지 않은 마스터 비밀번호를 완벽히 차단합니다.")
+	if len(m.vault.Accounts) == 0 {
+		s += "저장된 계정이 없습니다. (새로운 계정을 추가하려면 기능을 구현해야 합니다)\n"
 	} else {
-		fmt.Println("[Fail] 무결성 검증 실패: 틀린 비밀번호로 데이터가 열렸습니다!")
+		// 계정 목록 출력
+		for i, acc := range m.vault.Accounts {
+			// 커서가 위치한 항목은 "👉" 로 하이라이트 표시
+			cursorStr := "  " // 기본 공백
+			if m.cursor == i {
+				cursorStr = "👉"
+			}
+
+			// 화면에는 비밀번호를 *** 로 마스킹 처리하여 출력
+			s += fmt.Sprintf("%s %s | %s | ********\n", cursorStr, acc.Service, acc.Username)
+		}
 	}
 
-	// 테스트 종료 후 생성된 임시 파일 삭제
-	os.Remove(vaultPath)
+	s += "\n[↑/↓: 이동] [q/esc: 종료]\n"
+	return s
+}
+
+func main() {
+	fmt.Println("========================================")
+	fmt.Println("    🔐 Secure Password Manager CLI")
+	fmt.Println("========================================")
+
+	var salt []byte
+	var isNewVault bool
+
+	if _, err := os.Stat(vaultPath); os.IsNotExist(err) {
+		isNewVault = true
+		fmt.Println("[안내] 초기 저장소 파일이 없습니다. 새로운 마스터 비밀번호를 설정합니다.")
+		newSalt, err := core.GenerateSalt()
+		if err != nil {
+			log.Fatalf("Salt 생성 실패: %v", err)
+		}
+		salt = newSalt
+	} else {
+		existingSalt, err := storage.LoadSalt(vaultPath)
+		if err != nil {
+			log.Fatalf("Salt 로드 실패: %v", err)
+		}
+		salt = existingSalt
+	}
+
+	fmt.Print("🔑 마스터 비밀번호를 입력하세요: ")
+	masterPassword, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		log.Fatalf("비밀번호 입력 에러: %v", err)
+	}
+
+	defer core.ZeroMemory(masterPassword)
+
+	key := core.DeriveKey(masterPassword, salt)
+	defer core.ZeroMemory(key)
+
+	var vault *core.Vault
+	if isNewVault {
+		vault = &core.Vault{Accounts: []core.Account{}}
+	} else {
+		loadedVault, err := storage.LoadVault(vaultPath, key)
+		if err != nil {
+			log.Fatalf("❌ 로그인 실패: 마스터 비밀번호가 틀렸거나 파일이 손상되었습니다. (%v)", err)
+		}
+		vault = loadedVault
+	}
+
+	defer func() {
+		for i := range vault.Accounts {
+			core.ZeroMemory(vault.Accounts[i].Password)
+		}
+		fmt.Println("\n[보안] 메모리 내 모든 평문 비밀번호 영역이 파기되었습니다.")
+	}()
+
+	// --- 4. TUI 프로그램 실행 ---
+	// 작성한 모델을 기반으로 Bubble Tea 프로그램을 시작합니다.
+	p := tea.NewProgram(model{
+		vault:  vault,
+		key:    key,
+		salt:   salt,
+		cursor: 0,
+	})
+
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("알 수 없는 에러가 발생했습니다: %v", err)
+		os.Exit(1)
+	}
 }
