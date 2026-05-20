@@ -7,6 +7,7 @@ import (
 	"pass/core"
 	"pass/storage"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 )
@@ -15,20 +16,19 @@ const vaultPath = "vault.dat"
 
 // --- 1. Bubble Tea 애플리케이션 상태(Model) 정의 ---
 type model struct {
-	vault  *core.Vault
-	key    []byte
-	salt   []byte
-	cursor int // 현재 선택된 리스트의 인덱스 (위/아래 방향키로 조절)
-	err    error
+	vault   *core.Vault
+	key     []byte
+	salt    []byte
+	cursor  int
+	message string
+	err     error
 }
 
-// Init은 프로그램 시작 시 초기화할 명령을 정의합니다 (지금은 없음)
 func (m model) Init() tea.Cmd {
 	return nil
 }
 
-// --- 2. 이벤트 처리 (Update) ---
-// 키보드 입력이나 기타 이벤트가 발생할 때마다 호출됩니다.
+// 키보드 입력이나 기타 이벤트가 발생할 때마다 호출.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
@@ -51,22 +51,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.vault.Accounts)-1 {
 				m.cursor++
 			}
+		case "c", "enter":
+			if len(m.vault.Accounts) > 0 {
+				selectedAccount := m.vault.Accounts[m.cursor]
+
+				err := clipboard.WriteAll(string(selectedAccount.Password))
+				if err != nil {
+					m.err = fmt.Errorf("클립보드 복사 실패: %v", err)
+				} else {
+					m.message = fmt.Sprintf("✅ '%s' 서비스의 비밀번호가 클립보드에 복사되었습니다!", selectedAccount.Service)
+				}
+			}
 		}
 	}
 	return m, nil
 }
 
-// --- 3. 화면 렌더링 (View) ---
-// Model의 상태를 바탕으로 터미널에 그릴 문자열을 반환합니다.
 func (m model) View() string {
 	s := "🔐 Secure Password Manager\n\n"
 
 	if len(m.vault.Accounts) == 0 {
-		s += "저장된 계정이 없습니다. (새로운 계정을 추가하려면 기능을 구현해야 합니다)\n"
+		s += "저장된 계정이 없습니다. (새로운 계정을 추가하려면 기능을 구현중)\n"
 	} else {
-		// 계정 목록 출력
 		for i, acc := range m.vault.Accounts {
-			// 커서가 위치한 항목은 "👉" 로 하이라이트 표시
 			cursorStr := "  " // 기본 공백
 			if m.cursor == i {
 				cursorStr = "👉"
@@ -77,7 +84,11 @@ func (m model) View() string {
 		}
 	}
 
-	s += "\n[↑/↓: 이동] [q/esc: 종료]\n"
+	if m.message != "" {
+		s += fmt.Sprintf("\n%s\n", m.message)
+	}
+
+	s += "\n[↑/↓: 이동] [c/Enter: 비밀번호 복사] [q/esc: 종료]\n"
 	return s
 }
 
