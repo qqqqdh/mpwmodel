@@ -21,9 +21,9 @@ func GenerateSalt() ([]byte, error) {
 
 // DeriveKey는 마스터 비밀번호와 Salt를 결합하여 32바이트 AES 키를 생성 (Argon2id 사용)
 func DeriveKey(masterPassword, salt []byte) []byte {
-	timeCost := uint32(1)
+	timeCost := uint32(3)
 	memoryCost := uint32(64 * 1024) // 64MB
-	threads := uint8(4)
+	threads := uint8(1)
 	keyLen := uint32(32)
 
 	return argon2.IDKey(masterPassword, salt, timeCost, memoryCost, threads, keyLen)
