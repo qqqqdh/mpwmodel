@@ -17,7 +17,7 @@ func SaveVault(filePath string, vault *core.Vault, key, salt []byte) error {
 
 	defer core.ZeroMemory(plaintext)
 
-	ciphertext, err := core.Encrypt(key, plaintext)
+	ciphertext, err := core.Encrypt(key, plaintext, salt)
 	if err != nil {
 		return err
 	}
@@ -30,6 +30,11 @@ func SaveVault(filePath string, vault *core.Vault, key, salt []byte) error {
 	tempPath := filePath + ".tmp"
 	if err := os.WriteFile(tempPath, finalData, 0600); err != nil {
 		return err
+	}
+
+	if _, err := os.Stat(filePath); err == nil {
+		backupPath := filePath + ".bak"
+		_ = os.Remove(backupPath) // 기존 백업 파일 제거
 	}
 
 	return os.Rename(tempPath, filePath)
@@ -60,11 +65,12 @@ func LoadVault(filePath string, key []byte) (*core.Vault, error) {
 	}
 
 	// 맨 앞 16바이트(Salt)를 제외한 나머지가 암호문입니다.
+	salt := fileData[:16]
 	ciphertext := fileData[16:]
 
-	plaintext, err := core.Decrypt(key, ciphertext)
+	plaintext, err := core.Decrypt(key, ciphertext, salt)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("마스터 비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다")
 	}
 
 	defer core.ZeroMemory(plaintext)

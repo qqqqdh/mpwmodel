@@ -30,7 +30,7 @@ func DeriveKey(masterPassword, salt []byte) []byte {
 }
 
 // Encrypt는 AES-GCM을 사용하여 평문 데이터를 암호화
-func Encrypt(key, plaintext []byte) ([]byte, error) {
+func Encrypt(key, plaintext, salt []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -46,12 +46,12 @@ func Encrypt(key, plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	ciphertext := aesGCM.Seal(nonce, nonce, plaintext, nil)
+	ciphertext := aesGCM.Seal(nonce, nonce, plaintext, salt)
 	return ciphertext, nil
 }
 
 // Decrypt는 암호문에서 Nonce를 분리한 뒤 평문으로 복호화
-func Decrypt(key, ciphertext []byte) ([]byte, error) {
+func Decrypt(key, ciphertext, salt []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func Decrypt(key, ciphertext []byte) ([]byte, error) {
 
 	nonce, actualCiphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 
-	plaintext, err := aesGCM.Open(nil, nonce, actualCiphertext, nil)
+	plaintext, err := aesGCM.Open(nil, nonce, actualCiphertext, salt)
 	if err != nil {
 		return nil, err
 	}
