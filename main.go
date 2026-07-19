@@ -28,7 +28,19 @@ const (
 	stateForm
 	stateDeleteConfirm
 	stateChangeMaster
+	stateLocked
 )
+
+// idleTimeout 동안 키 입력이 없으면 자동 잠금됩니다.
+const idleTimeout = 5 * time.Minute
+
+type idleTickMsg struct{}
+
+func idleTickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return idleTickMsg{}
+	})
+}
 
 type formMode int
 
@@ -59,6 +71,8 @@ type model struct {
 	focusIndex       int
 	masterInputs     []textinput.Model // 마스터 비밀번호 변경 다중 입력 폼
 	masterFocusIndex int
+	lockInput        textinput.Model // 잠금 해제용 마스터 비밀번호 입력
+	lastActivity     time.Time       // 자동 잠금 판단용 마지막 입력 시각
 }
 
 func initialModel(v *core.Vault, k, s []byte) model {
@@ -87,6 +101,11 @@ func initialModel(v *core.Vault, k, s []byte) model {
 		masterInputs[i].EchoCharacter = '*'
 	}
 
+	lockInput := textinput.New()
+	lockInput.Placeholder = "마스터 비밀번호"
+	lockInput.EchoMode = textinput.EchoPassword
+	lockInput.EchoCharacter = '*'
+
 	return model{
 		vault:        v,
 		key:          k,
@@ -94,11 +113,13 @@ func initialModel(v *core.Vault, k, s []byte) model {
 		state:        stateList,
 		inputs:       inputs,
 		masterInputs: masterInputs,
+		lockInput:    lockInput,
+		lastActivity: time.Now(),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, idleTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -107,12 +128,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message = "⏱️ (보안) 복사되었던 비밀번호가 클립보드에서 자동 삭제되었습니다."
 		return m, nil
 
+	case idleTickMsg:
+		if m.state != stateLocked && time.Since(m.lastActivity) >= idleTimeout {
+			m.state = stateLocked
+			m.lockInput.SetValue("")
+			m.lockInput.Focus()
+			_ = clipboard.WriteAll("") // 잠금 시 클립보드도 함께 초기화
+			m.message = "🔒 일정 시간 입력이 없어 자동 잠금되었습니다."
+		}
+		return m, idleTickCmd()
+
 	case tea.KeyMsg:
+		m.lastActivity = time.Now()
+
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
 
 		switch m.state {
+		case stateLocked:
+			switch msg.String() {
+			case "enter":
+				pwdBytes := []byte(m.lockInput.Value())
+				defer core.ZeroMemory(pwdBytes)
+				m.lockInput.SetValue("")
+
+				tempKey := core.DeriveKey(pwdBytes, m.salt)
+				defer core.ZeroMemory(tempKey)
+
+				if subtle.ConstantTimeCompare(tempKey, m.key) == 1 {
+					m.state = stateList
+					m.message = "🔓 잠금이 해제되었습니다."
+				} else {
+					m.message = "❌ 마스터 비밀번호가 틀렸습니다."
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.lockInput, cmd = m.lockInput.Update(msg)
+			return m, cmd
+
 		case stateList:
 			switch msg.String() {
 			case "q", "esc":
@@ -449,6 +504,13 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	s := "🔐 Secure Password Manager\n\n"
+
+	if m.state == stateLocked {
+		s += m.message + "\n\n"
+		s += m.lockInput.View() + "\n"
+		s += "\n[Enter: 잠금 해제] [Ctrl+C: 종료]\n"
+		return s
+	}
 
 	if m.state == stateDeleteConfirm {
 		return s + m.message + "\n"
