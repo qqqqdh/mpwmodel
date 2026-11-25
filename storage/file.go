@@ -45,13 +45,16 @@ func SaveVault(filePath string, vault *core.Vault, key, salt []byte) error {
 		return err
 	}
 
-	// 기존 vault를 .bak으로 보존 (저장 실패/손상 시 복구용)
-	if _, err := os.Stat(filePath); err == nil {
-		if err := os.Rename(filePath, filePath+".bak"); err != nil {
+	// 기존 vault를 .bak으로 복사해 보존. 이동(rename)하면 아래 교체 전에 죽을 경우 vault.dat이 사라짐
+	if old, err := os.ReadFile(filePath); err == nil {
+		if err := os.WriteFile(filePath+".bak", old, 0600); err != nil {
 			return err
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
+	// rename은 같은 파일시스템 안에서 원자적으로 덮어쓰므로 vault.dat이 없는 순간이 없음
 	return os.Rename(tempPath, filePath)
 }
 
